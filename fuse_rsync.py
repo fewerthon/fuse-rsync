@@ -24,7 +24,7 @@ class RsyncModule():
     """
         This class implements access to an Rsync module.
     """
-    def __init__(self, host, module, user = None, password = None):
+    def __init__(self, host, module, user = None, password = None, path = '/'):
         self._environment = os.environ.copy()
         self._remote_url = "rsync://"
         if not user is None:
@@ -35,6 +35,16 @@ class RsyncModule():
         if not password is None:
             self._environment['RSYNC_PASSWORD'] = password
         self._attr_cache = {}
+        #testa rsync no inicio do modulo
+        remote_url = self._remote_url + path
+        try:
+            output = subprocess.check_output(["rsync", "--list-only", remote_url], env = self._environment)
+        except subprocess.CalledProcessError as err:
+            if err.returncode == 23:
+                return []
+            raise err
+
+
 
     def _parse_attrs(self, attrs):
         """
@@ -70,13 +80,23 @@ class RsyncModule():
             in a datetime object) and *filename* (The file's name).
         """
         # See http://stackoverflow.com/questions/10323060/printing-file-permissions-like-ls-l-using-stat2-in-c for modes
-        RE_LINE = re.compile("^([ldcbps-]([r-][w-][x-]){3})\s+([0-9]+)\s+([0-9]{4}/[0-9]{2}/[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}) (.*)$")
+        #antigo nao considera arquivos e diretorios que tem virgula no tamanho
+        #ex: 
+        #drwxr-xr-x          4,096 2024/01/29 10:35:15 .
+        #-rw-r--r--            648 2023/12/15 15:10:19 xfer-2023-12-15.log
+        #-rw-r--r--            162 2024/01/29 10:39:33 xfer-2024-01-29.log
+        #drwxr-xr-x          4,096 2024/06/04 00:10:06 ears
+        #drwx------          4,096 2022/01/14 11:36:49 lost+found
+        #drwxr-xr-x          4,096 2024/06/04 09:49:01 rex
+        #drwxr-xr-x          4,096 2023/12/22 09:35:19 tts
+        
+        #RE_LINE = re.compile("^([ldcbps-]([r-][w-][x-]){3})\s+([0-9,]+)\s+([0-9]{4}/[0-9]{2}/[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}) (.*)$")
+        RE_LINE = re.compile(r"^([ldcbps-]([r-][w-][x-]){3})\s+([\d,.]+)\s+(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})\s+(.*)$")
         remote_url = self._remote_url + path
         try:
             cmdline = ["rsync", "--list-only", remote_url]
             log.debug("executing %s", " ".join(cmdline))
             output = subprocess.check_output(["rsync", "--list-only", remote_url], env = self._environment)
-
             listing = []
             for line in output.decode(encoding = 'iso-8859-1').split("\n"):
                 match = RE_LINE.match(line)
@@ -86,7 +106,8 @@ class RsyncModule():
 
                 listing.append({
                         "attrs": self._parse_attrs(match.group(1)),
-                        "size": int(match.group(3)),
+                        #"size": int(match.group(3)),
+                        "size": int(match.group(3).replace(',','').replace('.','')),
                         "timestamp": datetime.datetime.strptime(match.group(4), "%Y/%m/%d %H:%M:%S"),
                         "filename": match.group(5)
                         })
@@ -112,6 +133,17 @@ class RsyncModule():
         subprocess.check_call(cmdline, env = self._environment)
         
         return localpath
+
+"""
+#funcao de teste do list
+def test_list_function():
+    rsync_module = RsyncModule('tesbe2a1', 'rex2', user='root', password='your_password')
+    listing = rsync_module.list('/')
+    for entry in listing:
+        print(entry)
+
+test_list_function()
+"""
 
 class FuseRsyncFileInfo(fuse.FuseFileInfo):
     """
@@ -158,6 +190,7 @@ class FuseRsync(fuse.Fuse):
         options = self.cmdline[0]
         log.debug("Invoked fsinit() with host=%s, module=%s, user=%s, password=%s", options.host, options.module, options.user, options.password)
         self._rsync = RsyncModule(options.host, options.module, options.user, options.password)
+        
 
     # Filesystem methods
     # ==================
@@ -180,7 +213,7 @@ class FuseRsync(fuse.Fuse):
             log.debug("Invoked getattr('%s')", path)
 
             path = self._full_path(path)
-        
+
             st = fuse.Stat() 
             
             if path == "/":
@@ -228,7 +261,7 @@ class FuseRsync(fuse.Fuse):
             log.debug("Invoked readdir('%s')", path)
 
             full_path = self._full_path(path)
-
+            
             yield fuse.Direntry('.')
             yield fuse.Direntry('..')
         
